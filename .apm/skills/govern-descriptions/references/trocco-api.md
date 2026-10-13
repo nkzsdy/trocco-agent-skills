@@ -1,6 +1,6 @@
 # TROCCO API: 基礎知識
 
-> 2026-09-09 時点の公開仕様に基づく要約。齟齬があれば https://documents.trocco.io/apidocs.md を正とする。
+> 2026-10-13 時点の公開仕様に基づく要約。齟齬があれば https://documents.trocco.io/apidocs.md を正とする。
 
 すべての skill が前提とする、TROCCO API の共通仕様。
 skill を実行する前に、まずこのファイルを読むこと。
@@ -41,6 +41,7 @@ trocco-api.sh /job_definitions/123 -X PATCH \
 一覧系エンドポイント（`index`）は cursor ベースのページネーション。
 
 - クエリパラメータ: `limit`（既定 50 / 上限 200）, `cursor`
+  - 公式の上限は 100（`/job_definitions`）だが、`limit=200` でも 200 件返る（実測で確認済み）。
 - レスポンス封筒: `{ "items": [...], "next_cursor": "<base64>" | null }`
 - `next_cursor` が `null` になるまで繰り返し取得する。
 
@@ -89,14 +90,26 @@ fetch_all job_definitions | jq -s '.' > "${TMPDIR:-/tmp}/job_definitions.json"
 | チーム | Team | `/teams` | ✅ / ✅ / ✅ / ✅ / ✅ |
 | ラベル | Label | `/labels` | ✅ / ✅ / ✅ / ✅ / ✅ |
 | 接続情報 | Connection | `/connections/:connection_type` | ✅ / ✅ / ✅ / ✅ / ✅ |
+| dbt Gitリポジトリ連携 | dbt Git Repository | `/dbt_git_repositories` | ✅ / ✅ / ✅ / ✅ / ✅ |
+| 転送元カスタムコネクタ | Custom Connector Input | `/custom_connector_inputs` | ✅(`/custom_connectors`) / ✅ / ✅ / ✅ / ✅ |
+| 転送先カスタムコネクタ | Custom Connector Output | `/custom_connector_outputs` | ✅(`/custom_connectors`) / ✅ / ✅ / ✅ / ✅ |
+| 環境グループ | Environment Group | `/environment_groups` | ✅ / ✅ / ✅ / ✅ / ✅ |
+| 環境 | Environment | `/environments` | ✅ / ✅ / ✅ / ✅ / ✅ |
 
-> ジョブ実行系: `/datamart_jobs`（create のみ）, `/job_definitions/:id/jobs`（index）, `/jobs/:id`, `/pipeline_jobs`。
+> ジョブ実行系: 実行（create）は `/jobs`, `/datamart_jobs`, `/pipeline_jobs`。
+> 結果取得（show）は `/jobs/:id`, `/datamart_jobs/:id`, `/pipeline_jobs/:id`, `/dbt_jobs/:id`。
+> 転送ジョブの一覧は `/job_definitions/:id/jobs`（index）。
+>
+> 実行ログは `/jobs/:id/logs`, `/datamart_jobs/:id/logs`, `/dbt_jobs/:id/logs`（GET）で取得する。
+> 結果取得が返すのはステータス・件数（`transfer_record` など）・日時だけで、エラー理由は含まない。
+> ジョブの完了前は stream の `status` が `pending` になるので、完了後に取得する。
+> 転送ジョブだけ `?type=log|error_log` で絞り込める。データマートジョブと dbt ジョブは `type` を指定できず、`log` の stream 1 つだけを返す。
 
 ## 更新（PATCH）の重要な挙動: 差分更新だが配列は洗い替え
 
 `job_definition` / `datamart_definition` / `pipeline_definition` の更新はいずれも
 **スカラー項目は差分更新（送った項目だけ変わる）／配列項目は洗い替え（送った配列で全置換）** という
-セマンティクスを持つ。OpenAPI の記述より:
+セマンティクスを持つ。転送設定の OpenAPI の記述より:
 
 > 基本的に差分更新です。配列要素については洗い替えとなるため、すべての要素を指定する必要があります。
 > 配列要素を空にしたい場合明示的に空配列を指定してください。
@@ -109,6 +122,7 @@ fetch_all job_definitions | jq -s '.' > "${TMPDIR:-/tmp}/job_definitions.json"
 - **配列**（`notifications`, `schedules`, `labels` など）→ 送った配列が既存を**全置換**する。
   - 通知を「追加」したい場合は **既存を GET → 配列に append → 全量を PATCH** する（既存通知を消さないため）。
   - `[]` を送ると全削除される。**未指定なら変更されない**（差分更新のため）。
+  - 例外: データマート定義の `column_descriptions` は、送らなかったカラムを変更しない。
 
 > [!CAUTION]
 > **この差分更新は上記 3 種の定義だけの話**。チームとリソースグループには当てはまらない。
@@ -193,7 +207,8 @@ trocco-api.sh '/teams?limit=1' -o /dev/null -D - 2>/dev/null | grep -i x-rate-li
 
 | ステータス | 意味 | 対処 |
 |---|---|---|
-| 401 | API キー不正 / 未設定 | `$TROCCO_API_KEY` を確認 |
+| 400 | 不正なリクエスト | `message` / `errors[]` を読む（上記「エラーレスポンスの形が一定しない」） |
+| 401 | API キー不正 / 未設定（チーム・リソースグループの更新では権限不足も） | `$TROCCO_API_KEY` と権限を確認 |
 | 403 | 権限不足（Policy 拒否） | 該当リソースへの権限（管理者 / リソースグループ role）を確認 |
 | 404 | リソース無し | id / type を確認 |
 | 422 | バリデーションエラー | レスポンス `message` を読む。必須項目・enum 値の欠落が多い |
